@@ -17,6 +17,21 @@ streamlit run dashboard.py
 streams, and weather. Data lives in `data/` (gitignored), tokens in
 `.garminconnect/` (gitignored).
 
+## Publishing (GitHub Pages)
+
+GitHub Pages is static, so the Streamlit app itself isn't hosted — instead
+`export_static.py` renders the same charts into a self-contained
+`site/index.html` (dew-band filter works client-side). Publish flow:
+
+```bash
+python pull.py && python compute.py && python export_static.py
+git add site && git commit -m "update dashboard" && git push
+```
+
+The `pages.yml` workflow deploys `site/` on every push to main. The page is
+**public**: it exposes dates, paces, HR, VO₂max, and Garmin run names — but
+never GPS coordinates (they're not exported).
+
 ## Steady-Z2 eligibility (the EF pool)
 
 A run counts toward the efficiency trend only if **all** gates pass
