@@ -1,0 +1,14 @@
+# Garmin auth tokens — never commit
+.garminconnect/
+tokens/
+
+# Pulled data exports
+data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
