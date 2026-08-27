@@ -44,7 +44,9 @@ band_choice = st.sidebar.radio(
 steady = steady_all if band_choice == "All" else steady_all[steady_all["dew_band"] == band_choice]
 
 with st.sidebar.expander("Steady-Z2 gate report"):
-    st.caption(f"Z2 = {zones['z2_low']}–{zones['z2_high']} bpm (from Garmin). "
+    z2lo, z2hi = C.effective_z2(zones)
+    src = "config override" if C.Z2_OVERRIDE else "from Garmin"
+    st.caption(f"Z2 = {z2lo}–{z2hi} bpm ({src}). "
                f"{len(steady_all)} of {len(runs)} runs eligible.")
     excl = runs.loc[~runs["steady_z2"], "failed_gates"].str.split(",").explode()
     st.dataframe(excl.value_counts().rename("runs"), width='stretch')

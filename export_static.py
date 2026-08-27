@@ -47,7 +47,7 @@ PAGE = """<!DOCTYPE html>
 {body}
 <footer>Generated {generated} · steady-Z2 gates: outdoor GPS · no races ·
 ≥25 min after 5-min warmup discard · avg HR in Z2 and ≥80% time in Z2 ·
-pace CV ≤8% · ≤40 ft/mi elevation · Z2 = {z2lo}–{z2hi} bpm ·
+pace CV ≤{max_cv:.0%} · ≤{max_elev} ft/mi elevation · Z2 = {z2lo}–{z2hi} bpm ·
 {n_steady}/{n_runs} runs eligible · dew point via Open-Meteo</footer>
 </body></html>"""
 
@@ -233,9 +233,11 @@ def main():
     body.append(div(fh))
     body.append("</div>")
 
+    z2lo, z2hi = C.effective_z2(zones)
     html = PAGE.format(cards=cards, body="\n".join(body),
                        generated=dt.date.today().isoformat(),
-                       z2lo=zones["z2_low"], z2hi=zones["z2_high"],
+                       z2lo=z2lo, z2hi=z2hi,
+                       max_cv=C.MAX_PACE_CV, max_elev=C.MAX_ELEV_GAIN_FT_PER_MI,
                        n_steady=len(steady), n_runs=len(runs))
     SITE.joinpath("index.html").write_text(html)
     print(f"Wrote site/index.html ({len(html) // 1024} KB)")

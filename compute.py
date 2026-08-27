@@ -94,6 +94,8 @@ def gate_run(row, z2_low, z2_high) -> list:
         fails.append("not_outdoor_gps_run")
     if row.get("event_type") == "race":
         fails.append("race")
+    if "walk run" in (row.get("name") or "").lower():
+        fails.append("walk_run_workout")  # walking skews the pace-HR relation
     if not row.get("has_streams"):
         fails.append("no_streams")
         return fails
@@ -106,7 +108,7 @@ def gate_run(row, z2_low, z2_high) -> list:
     if not (z2_low <= row["eff_avg_hr"] <= z2_high):
         fails.append("avg_hr_outside_z2")
     if row["frac_time_z2"] < C.MIN_TIME_IN_Z2:
-        fails.append("time_in_z2_below_80pct")
+        fails.append("time_in_z2_low")
     if row["pace_cv"] > C.MAX_PACE_CV:
         fails.append("pace_too_variable")
     return fails
@@ -114,11 +116,11 @@ def gate_run(row, z2_low, z2_high) -> list:
 
 def main():
     zones = json.loads((C.DATA / "hr_zones.json").read_text())
-    z2_low, z2_high = zones["z2_low"], zones["z2_high"]
+    z2_low, z2_high = C.effective_z2(zones)
     acts = pd.read_parquet(C.DATA / "activities.parquet")
     weather = pd.read_parquet(C.DATA / "weather.parquet")
 
-    metrics = [analyze_streams(aid, z2_low, z2_high, zones["floors"])
+    metrics = [analyze_streams(aid, z2_low, z2_high, C.effective_floors(zones))
                for aid in acts["activity_id"]]
     df = pd.concat([acts.reset_index(drop=True), pd.DataFrame(metrics)], axis=1)
     df = df.merge(weather, on="activity_id", how="left")

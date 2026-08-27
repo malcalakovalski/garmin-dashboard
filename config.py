@@ -15,12 +15,20 @@ START_DATE = "2022-01-01"  # backfill horizon for first pull
 RACE_DATE = "2026-10-31"   # 10K race day
 REF_HR = 145               # headline reference HR (mid-Z2, confirmed)
 
+# Garmin's configured zones are factory defaults (Z2 119–138 @ max 201) and
+# don't match actual training (easy-run cluster 140–155 bpm) — override here.
+# Set to None to use the Garmin-configured zones from data/hr_zones.json.
+Z2_OVERRIDE = (135, 152)
+
 # --- Steady-Z2 eligibility gates ---
 WARMUP_DISCARD_S = 300           # drop first 5 min (HR lag)
 MIN_DURATION_S = 25 * 60         # post-discard duration must still clear this
-MIN_TIME_IN_Z2 = 0.80            # fraction of moving time inside Z2 band
-MAX_PACE_CV = 0.08               # CV of 30s-smoothed pace
-MAX_ELEV_GAIN_FT_PER_MI = 40     # terrain gate (exclude, don't adjust)
+MIN_TIME_IN_Z2 = 0.60            # fraction of moving time inside Z2 band
+                                 # (median is 0.61 for runs averaging mid-band;
+                                 # intervals are caught by avg-HR + pace-CV)
+MAX_PACE_CV = 0.12               # CV of 30s-smoothed pace (GPS noise is
+                                 # proportionally larger at ~13 min/mi paces)
+MAX_ELEV_GAIN_FT_PER_MI = 50     # terrain gate (routes median 32 ft/mi)
 MIN_MOVING_SPEED_MPS = 1.0       # below this = standing / paused
 DECOUPLING_MIN_DURATION_S = 40 * 60
 
@@ -35,6 +43,19 @@ DEW_BANDS = [
     ("55–65°F", 55.0, 65.0),
     ("65°F+", 65.0, 200.0),
 ]
+
+
+def effective_z2(zones: dict):
+    """(z2_low, z2_high): the manual override if set, else Garmin's zones."""
+    return Z2_OVERRIDE or (zones["z2_low"], zones["z2_high"])
+
+
+def effective_floors(zones: dict):
+    """Zone floors for the time-in-zone panel, with Z2 edges overridden."""
+    f = list(zones["floors"])
+    if Z2_OVERRIDE:
+        f[1], f[2] = Z2_OVERRIDE[0], Z2_OVERRIDE[1] + 1
+    return f
 
 
 def dew_band(dew_f):
