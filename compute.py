@@ -22,7 +22,7 @@ def pace_min_per_mi(speed_mps: float) -> float:
     return M_PER_MI / speed_mps / 60.0
 
 
-def analyze_streams(aid: int, z2_low: float, z2_high: float, floors: list):
+def analyze_streams(aid: int, band_lo: float, band_hi: float, floors: list):
     """Compute stream-derived metrics for one run. Returns dict (may be sparse)."""
     path = C.STREAMS / f"{aid}.parquet"
     if not path.exists():
@@ -56,7 +56,7 @@ def analyze_streams(aid: int, z2_low: float, z2_high: float, floors: list):
     pace = 1.0 / speed_smooth[elig].clip(lower=0.1)
     pace_cv = float(pace.std() / pace.mean())
 
-    frac_z2 = float(w[(hr >= z2_low) & (hr <= z2_high)].sum() / w.sum())
+    frac_band = float(w[(hr >= band_lo) & (hr <= band_hi)].sum() / w.sum())
 
     # aerobic decoupling: EF (speed/HR) of first vs second half of eligible time
     cum = dts[elig].cumsum()
@@ -81,21 +81,23 @@ def analyze_streams(aid: int, z2_low: float, z2_high: float, floors: list):
         "eff_avg_speed_mps": avg_speed,
         "eff_pace_min_mi": pace_min_per_mi(avg_speed),
         "pace_cv": pace_cv,
-        "frac_time_z2": frac_z2,
+        "frac_time_band": frac_band,
         "decoupling_pct": decoupling_pct,
         **zone_secs,
     }
 
 
-def gate_run(row, z2_low, z2_high) -> list:
-    """Return list of failed-gate names (empty list = steady Z2 run)."""
+def gate_run(row) -> list:
+    """Return list of failed-gate names (empty list = steady aerobic run)."""
+    lo, hi = C.EASY_HR_BAND
     fails = []
     if row["type_key"] != "running" or pd.isna(row["start_lat"]):
         fails.append("not_outdoor_gps_run")
     if row.get("event_type") == "race":
         fails.append("race")
-    if "walk run" in (row.get("name") or "").lower():
-        fails.append("walk_run_workout")  # walking skews the pace-HR relation
+    name = (row.get("name") or "").lower()
+    if any(k in name for k in C.WORKOUT_NAME_KEYWORDS):
+        fails.append("named_workout")
     if not row.get("has_streams"):
         fails.append("no_streams")
         return fails
@@ -105,10 +107,10 @@ def gate_run(row, z2_low, z2_high) -> list:
     dist_mi = (row["distance_m"] or 0) / M_PER_MI
     if dist_mi > 0 and (row["elevation_gain_m"] or 0) * FT_PER_M / dist_mi > C.MAX_ELEV_GAIN_FT_PER_MI:
         fails.append("too_hilly")
-    if not (z2_low <= row["eff_avg_hr"] <= z2_high):
-        fails.append("avg_hr_outside_z2")
-    if row["frac_time_z2"] < C.MIN_TIME_IN_Z2:
-        fails.append("time_in_z2_low")
+    if not (lo <= row["eff_avg_hr"] <= hi):
+        fails.append("avg_hr_outside_easy_band")
+    if row["frac_time_band"] < C.MIN_TIME_IN_BAND:
+        fails.append("time_in_band_low")
     if row["pace_cv"] > C.MAX_PACE_CV:
         fails.append("pace_too_variable")
     return fails
@@ -116,16 +118,16 @@ def gate_run(row, z2_low, z2_high) -> list:
 
 def main():
     zones = json.loads((C.DATA / "hr_zones.json").read_text())
-    z2_low, z2_high = C.effective_z2(zones)
+    lo, hi = C.EASY_HR_BAND
     acts = pd.read_parquet(C.DATA / "activities.parquet")
     weather = pd.read_parquet(C.DATA / "weather.parquet")
 
-    metrics = [analyze_streams(aid, z2_low, z2_high, C.effective_floors(zones))
+    metrics = [analyze_streams(aid, lo, hi, C.effective_floors(zones))
                for aid in acts["activity_id"]]
     df = pd.concat([acts.reset_index(drop=True), pd.DataFrame(metrics)], axis=1)
     df = df.merge(weather, on="activity_id", how="left")
 
-    df["failed_gates"] = df.apply(lambda r: gate_run(r, z2_low, z2_high), axis=1)
+    df["failed_gates"] = df.apply(gate_run, axis=1)
     df["steady_z2"] = df["failed_gates"].map(len) == 0
     df["failed_gates"] = df["failed_gates"].map(",".join)
     df["dew_band"] = df["dew_point_f"].map(C.dew_band)

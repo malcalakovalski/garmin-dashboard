@@ -20,12 +20,16 @@ REF_HR = 145               # headline reference HR (mid-Z2, confirmed)
 # Set to None to use the Garmin-configured zones from data/hr_zones.json.
 Z2_OVERRIDE = (135, 152)
 
-# --- Steady-Z2 eligibility gates ---
+# --- Steady aerobic-run eligibility gates ---
+# EF pool = easy aerobic runs. Named workouts are excluded by keyword (Runna
+# names carry intent: tempo 161bpm/12%CV vs easy 149bpm/6%CV — cleaner signal
+# than HR alone); the HR band is the backstop for unnamed/pre-plan runs.
+EASY_HR_BAND = (135, 158)        # avg HR and most time must sit here
+WORKOUT_NAME_KEYWORDS = ("interval", "tempo", "speed", "track", "race",
+                         "walk run")
 WARMUP_DISCARD_S = 300           # drop first 5 min (HR lag)
-MIN_DURATION_S = 25 * 60         # post-discard duration must still clear this
-MIN_TIME_IN_Z2 = 0.60            # fraction of moving time inside Z2 band
-                                 # (median is 0.61 for runs averaging mid-band;
-                                 # intervals are caught by avg-HR + pace-CV)
+MIN_DURATION_S = 20 * 60         # post-discard duration must still clear this
+MIN_TIME_IN_BAND = 0.60          # fraction of moving time inside EASY_HR_BAND
 MAX_PACE_CV = 0.12               # CV of 30s-smoothed pace (GPS noise is
                                  # proportionally larger at ~13 min/mi paces)
 MAX_ELEV_GAIN_FT_PER_MI = 50     # terrain gate (routes median 32 ft/mi)
