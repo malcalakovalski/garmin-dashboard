@@ -45,9 +45,11 @@ PAGE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aerobic Efficiency</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
  :root {{ color-scheme: dark; }}
- body {{ font-family: ui-sans-serif, -apple-system, 'Segoe UI', sans-serif;
+ body {{ font-family: 'Inter', ui-sans-serif, -apple-system, sans-serif;
         background: #0b1120; color: #cbd5e1; max-width: 1150px;
         margin: 0 auto; padding: 24px 16px 40px; }}
  h1 {{ font-size: 1.45rem; color: #f1f5f9; margin: 0; letter-spacing: -.01em; }}
@@ -57,16 +59,20 @@ PAGE = """<!DOCTYPE html>
  .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr));
           gap: 12px; }}
  .card {{ background: linear-gradient(160deg, #131c31, #0e1526);
-         border: 1px solid #1e293b; border-radius: 14px; padding: 16px 18px; }}
+         border: 1px solid #1e293b; border-radius: 14px; padding: 16px 18px;
+         transition: border-color .15s; }}
+ .card:hover {{ border-color: #334155; }}
  .card .label {{ font-size: .72rem; text-transform: uppercase;
                 letter-spacing: .07em; color: #64748b; }}
  .card .value {{ font-size: 2.1rem; font-weight: 700; color: #f8fafc;
                 line-height: 1.25; font-variant-numeric: tabular-nums; }}
  .card .value small {{ font-size: 1rem; color: #94a3b8; font-weight: 500; }}
  .card .delta {{ font-size: .82rem; margin-top: 2px; }}
+ .cards.mini .card {{ padding: 12px 16px; border-radius: 12px; }}
+ .cards.mini .value {{ font-size: 1.45rem; }}
  .up {{ color: #34d399; }} .down {{ color: #f87171; }} .flat {{ color: #94a3b8; }}
- .grid3 {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }}
- @media (max-width: 900px) {{ .grid3 {{ grid-template-columns: 1fr; }} }}
+ .grid2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+ @media (max-width: 900px) {{ .grid2 {{ grid-template-columns: 1fr; }} }}
  .caption {{ font-size: .78rem; color: #64748b; margin: 2px 0 0; }}
  table.report {{ border-collapse: collapse; width: 100%; margin-top: 8px;
                 font-size: .85rem; font-variant-numeric: tabular-nums; }}
@@ -210,6 +216,152 @@ def decoupling_fig(long_steady):
     return fig
 
 
+def humidity_fig(steady):
+    """Pace@REF_HR vs dew point with the personal humidity cost stated."""
+    pts = steady.dropna(subset=["dew_point_f", "pace_at_ref"])
+    fig = go.Figure(go.Scatter(
+        x=pts["dew_point_f"], y=pts["pace_at_ref"], mode="markers",
+        marker=dict(color=[BAND_COLORS[b] for b in pts["dew_band"]], size=8,
+                    line=dict(width=1, color="rgba(15,23,42,.8)")),
+        customdata=np.stack([pts["name"], pts["date_dt"].dt.strftime("%b %d %Y")],
+                            axis=-1),
+        hovertemplate="%{customdata[0]}<br>%{customdata[1]}<br>"
+                      "dew %{x:.0f}°F · %{y:.2f} min/mi<extra></extra>",
+        name="steady runs"))
+    # Only claim a humidity cost when the fit is positive and supported —
+    # while fitness gains and summer arrive together, time and weather are
+    # entangled and a naive slope is meaningless (it currently comes out ~0).
+    note = "no clean humidity signal yet — fitness gains and summer arrived together"
+    if len(pts) >= 8 and np.ptp(pts["dew_point_f"]) >= 15:
+        slope, icept = np.polyfit(pts["dew_point_f"], pts["pace_at_ref"], 1)
+        if slope > 0.005:  # > 3 sec/mi per 10°F
+            xs = np.array([pts["dew_point_f"].min(), pts["dew_point_f"].max()])
+            fig.add_trace(go.Scatter(x=xs, y=slope * xs + icept, mode="lines",
+                                     line=dict(color="#f1f5f9", width=2,
+                                               dash="dot"),
+                                     name="fit", hoverinfo="skip"))
+            note = (f"Humidity costs you ~{slope * 10 * 60:.0f} sec/mi "
+                    f"per 10°F of dew point")
+    fig.add_annotation(text=note, xref="paper", yref="paper",
+                       x=0.02, y=0.02, showarrow=False,
+                       font=dict(color="#94a3b8", size=12))
+    fig.update_layout(showlegend=False)
+    fig.update_xaxes(title="dew point at run start (°F)")
+    fig.update_yaxes(autorange="reversed", title=f"pace at {C.REF_HR} bpm")
+    return fig
+
+
+def beats_fig(steady):
+    """Heartbeats per mile — the efficiency signal in a visceral unit."""
+    s = steady.copy()
+    s["beats_per_mi"] = s["eff_avg_hr"] * s["eff_pace_min_mi"]
+    fig = go.Figure(go.Scatter(
+        x=s["date_dt"], y=s["beats_per_mi"], mode="markers",
+        marker=dict(color=ACCENT, size=8, opacity=0.8,
+                    line=dict(width=1, color="rgba(15,23,42,.8)")),
+        customdata=s["name"],
+        hovertemplate="%{customdata}<br>%{x|%b %d %Y}: %{y:.0f} beats/mi"
+                      "<extra></extra>", name="steady runs"))
+    roll = (s.set_index("date_dt")["beats_per_mi"].rolling("28D").median()
+            .reset_index().rename(columns={"beats_per_mi": "v"}))
+    roll = gap_break(roll)
+    fig.add_trace(go.Scatter(x=roll["date_dt"], y=roll["v"], mode="lines",
+                             connectgaps=False, name="28-day median",
+                             line=dict(color="#f1f5f9", width=2)))
+    fig.update_layout(showlegend=False)
+    fig.update_yaxes(title="heartbeats per mile")
+    fig.update_xaxes(range=[dt.date.today() - dt.timedelta(days=300),
+                            dt.date.today() + dt.timedelta(days=10)])
+    return fig
+
+
+def discipline_fig(runs):
+    """Share of intended-easy runs actually kept in the easy band, monthly."""
+    name_l = runs["name"].fillna("").str.lower()
+    is_workout = name_l.str.contains("|".join(C.WORKOUT_NAME_KEYWORDS))
+    easy_intent = runs[~is_workout & (runs["event_type"] != "race")
+                       & runs["eff_avg_hr"].notna()].copy()
+    easy_intent["kept"] = easy_intent["eff_avg_hr"] <= C.EASY_HR_BAND[1]
+    m = (easy_intent.set_index("date_dt")
+         .resample("ME").agg(kept=("kept", "mean"), n=("kept", "size")))
+    m = m[m["n"] >= 3]
+    fig = go.Figure(go.Scatter(
+        x=m.index, y=m["kept"] * 100, mode="lines+markers",
+        marker=dict(color=GOOD, size=7), line=dict(color=GOOD, width=2),
+        customdata=m["n"],
+        hovertemplate="%{x|%b %Y}: %{y:.0f}% of %{customdata} easy runs"
+                      "<extra></extra>"))
+    fig.add_hline(y=80, line_dash="dot", line_color=MUTED, opacity=0.6)
+    fig.update_yaxes(range=[0, 105],
+                     title=f"% easy runs kept ≤{C.EASY_HR_BAND[1]} bpm")
+    return fig
+
+
+def calendar_fig(runs):
+    """GitHub-style consistency heatmap of daily miles, trailing 12 months."""
+    end = pd.Timestamp.today().normalize()
+    start = (end - pd.Timedelta(days=364)) - pd.Timedelta(days=int(
+        (end - pd.Timedelta(days=364)).dayofweek))
+    days = pd.date_range(start, end)
+    daily = runs.groupby(runs["date_dt"].dt.normalize())["distance_mi"].sum()
+    grid = pd.DataFrame({"day": days})
+    grid["mi"] = grid["day"].map(daily).fillna(0.0)
+    grid["week"] = grid["day"] - pd.to_timedelta(grid["day"].dt.dayofweek, "D")
+    grid["dow"] = grid["day"].dt.dayofweek
+    z = grid.pivot(index="dow", columns="week", values="mi")
+    text = grid.pivot(index="dow", columns="week", values="day").map(
+        lambda d: d.strftime("%b %d") if pd.notna(d) else "")
+    fig = go.Figure(go.Heatmap(
+        z=z.values, x=z.columns, y=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        text=text.values, xgap=3, ygap=3, showscale=False,
+        colorscale=[[0, "#131c31"], [0.01, "#131c31"], [0.15, "#164e63"],
+                    [0.45, "#0e7490"], [0.75, "#22d3ee"], [1, "#a5f3fc"]],
+        hovertemplate="%{text}: %{z:.1f} mi<extra></extra>"))
+    fig.update_yaxes(autorange="reversed", showgrid=False)
+    fig.update_xaxes(showgrid=False, tickformat="%b")
+    return fig
+
+
+def longrun_fig(runs):
+    """Longest run per week, trended toward race day."""
+    wk = runs.set_index("date_dt")["distance_mi"].resample("W").max().fillna(0)
+    fig = go.Figure(go.Bar(x=wk.index, y=wk.values, marker_color="#818cf8",
+                           marker_line_width=0,
+                           hovertemplate="wk of %{x|%b %d}: %{y:.1f} mi"
+                                         "<extra></extra>"))
+    fig.add_hline(y=6.2, line_dash="dash", line_color=INK, opacity=0.7,
+                  annotation_text="10K", annotation_font_color=INK)
+    fig.add_vline(x=pd.Timestamp(C.RACE_DATE).timestamp() * 1000,
+                  line_dash="dot", line_color=BAD, opacity=0.7,
+                  annotation_text="race", annotation_font_color=BAD)
+    fig.update_yaxes(title="longest run of the week (mi)")
+    fig.update_xaxes(range=[dt.date.today() - dt.timedelta(days=300),
+                            pd.Timestamp(C.RACE_DATE) + pd.Timedelta(days=10)])
+    return fig
+
+
+def bests_cards(runs, steady, long_steady, wk):
+    def when(ts):
+        return pd.Timestamp(ts).strftime("%b %d, %Y")
+    out = []
+    if len(steady):
+        b = steady.loc[steady["pace_at_ref"].idxmin()]
+        out.append(card(f"Best pace @ {C.REF_HR}", fmt_pace(b["pace_at_ref"]),
+                        "/mi", when(b["date_dt"])))
+    if len(long_steady):
+        b = long_steady.loc[long_steady["decoupling_pct"].idxmin()]
+        out.append(card("Best long-run decoupling",
+                        f"{b['decoupling_pct']:+.1f}%", "", when(b["date_dt"])))
+    if len(wk):
+        out.append(card("Biggest week", f"{wk.max():.1f}", "mi",
+                        "wk of " + when(wk.idxmax())))
+    if len(runs):
+        b = runs.loc[runs["distance_mi"].idxmax()]
+        out.append(card("Longest run", f"{b['distance_mi']:.1f}", "mi",
+                        when(b["date_dt"])))
+    return "<div class='cards mini'>" + "".join(out) + "</div>"
+
+
 def monthly_table(runs, steady):
     r = runs.set_index("date_dt")
     s = steady.set_index("date_dt")
@@ -284,16 +436,35 @@ def main():
         "own efficiency factor. Line = pace-vs-HR regression over a trailing "
         f"{C.FIT_WINDOW_DAYS}-day window, evaluated at {C.REF_HR} bpm.</p>",
 
-        "<h2>Aerobic decoupling</h2>",
-        "<p class='caption'>Steady runs ≥40 min: does efficiency hold from "
-        "first half to second half? Under 5% = aerobically durable.</p>",
+        "<h2>The cost of humidity · beats per mile</h2>",
+        "<div class='grid2'>",
+        div(humidity_fig(steady), 330),
+        div(beats_fig(steady), 330),
+        "</div>",
+        "<p class='caption'>Left: your measured weather penalty across all "
+        "steady runs — shown, not corrected for. Right: total heartbeats per "
+        "mile, the same efficiency signal in a blunter unit.</p>",
+
+        "<h2>Durability toward race day</h2>",
+        "<p class='caption'>Decoupling: does efficiency hold from first half "
+        "to second half of runs ≥40 min? Under 5% = aerobically durable. "
+        "Alongside: longest run per week vs the 10K distance.</p>",
+        "<div class='grid2'>",
+        div(decoupling_fig(long_steady), 330) if len(long_steady)
+        else "<p class='caption'>No steady runs ≥ 40 min yet.</p>",
+        div(longrun_fig(runs), 330),
+        "</div>",
+
+        "<h2>Personal bests</h2>",
+        bests_cards(runs, steady, long_steady, wk),
+
+        "<h2>Monthly report card</h2>", monthly_table(runs, steady),
+
+        "<h2>Consistency — trailing year</h2>",
+        div(calendar_fig(runs), 210),
     ]
-    body.append(div(decoupling_fig(long_steady), 330) if len(long_steady)
-                else "<p class='caption'>No steady runs ≥ 40 min yet.</p>")
 
-    body += ["<h2>Monthly report card</h2>", monthly_table(runs, steady)]
-
-    body.append("<h2>Context</h2><div class='grid3'>")
+    body.append("<h2>Context</h2><div class='grid2'>")
     fw = go.Figure(go.Bar(x=wk.index, y=wk.values, marker_color=ACCENT,
                           marker_line_width=0, name="weekly mi"))
     fw.update_yaxes(title="weekly miles")
@@ -312,6 +483,8 @@ def main():
     fz.update_yaxes(range=[0, 100], title="% run time by HR zone")
     body.append(div(fz, 260))
 
+    body.append(div(discipline_fig(runs), 260))
+
     dd = daily.copy()
     dd["date"] = pd.to_datetime(dd["date"])
     fh = go.Figure()
@@ -328,7 +501,11 @@ def main():
                      yaxis2=dict(title="HRV", overlaying="y", side="right",
                                  **AXIS))
     body.append(div(fh, 260))
-    body.append("</div>")
+    body.append("</div>"
+                "<p class='caption'>Bottom-left: share of intended-easy runs "
+                "(non-workout names) actually kept at or below "
+                f"{C.EASY_HR_BAND[1]} bpm — easy only works if it stays easy. "
+                "Dotted line = 80%.</p>")
 
     lo, hi = C.EASY_HR_BAND
     html = PAGE.format(cards=cards, body="\n".join(body),
