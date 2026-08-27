@@ -116,6 +116,23 @@ def gate_run(row) -> list:
     return fails
 
 
+TYPE_KEYWORDS = [("interval", "intervals"), ("speed", "intervals"),
+                 ("track", "intervals"), ("tempo", "tempo"),
+                 ("walk run", "walk-run"), ("long run", "long"),
+                 ("easy run", "easy")]
+
+
+def classify_type(row):
+    """Run type from Garmin/Runna naming; 'untagged' = pre-plan era runs."""
+    if row.get("event_type") == "race":
+        return "race"
+    name = (row.get("name") or "").lower()
+    for k, t in TYPE_KEYWORDS:
+        if k in name:
+            return t
+    return "untagged"
+
+
 def main():
     zones = json.loads((C.DATA / "hr_zones.json").read_text())
     lo, hi = C.EASY_HR_BAND
@@ -130,6 +147,7 @@ def main():
     df["failed_gates"] = df.apply(gate_run, axis=1)
     df["steady_z2"] = df["failed_gates"].map(len) == 0
     df["failed_gates"] = df["failed_gates"].map(",".join)
+    df["run_type"] = df.apply(classify_type, axis=1)
     df["dew_band"] = df["dew_point_f"].map(C.dew_band)
     df["date"] = pd.to_datetime(df["start_time_local"]).dt.date.astype(str)
     df["distance_mi"] = df["distance_m"] / M_PER_MI

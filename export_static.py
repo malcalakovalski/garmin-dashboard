@@ -1,7 +1,8 @@
 """Render the dashboard as one self-contained static page → site/index.html.
 
-Reads data/ files only. The dew-point filter is client-side: a trend line is
-precomputed per band and Plotly buttons toggle trace visibility.
+Reads data/ files only. Organized around one question: am I getting better
+at running? Every-run view with type filters, easy-run efficiency, running
+form (cadence / balance / stride / GCT / vertical ratio / power), durability.
 
     python export_static.py
 """
@@ -23,14 +24,16 @@ MUTED = "#64748b"
 GOOD = "#34d399"
 BAD = "#f87171"
 ACCENT = "#38bdf8"
-BAND_COLORS = {"<55°F": "#38bdf8", "55–65°F": "#fbbf24", "65°F+": "#f87171",
-               "unknown": "#475569"}
-BANDS = [b[0] for b in C.DEW_BANDS]
+TYPE_COLORS = {"easy": "#34d399", "long": "#818cf8", "tempo": "#fbbf24",
+               "intervals": "#f87171", "walk-run": "#22d3ee",
+               "race": "#f472b6", "untagged": "#64748b"}
+TYPE_ORDER = ["easy", "long", "tempo", "intervals", "walk-run", "race",
+              "untagged"]
 
 LAYOUT = dict(
     template=None,
     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif",
+    font=dict(family="'Inter', ui-sans-serif, -apple-system, sans-serif",
               color=INK, size=12),
     margin=dict(t=16, l=52, r=16, b=36),
     hoverlabel=dict(bgcolor="#1e293b", bordercolor="#334155",
@@ -43,7 +46,7 @@ AXIS = dict(gridcolor="rgba(148,163,184,0.12)", zerolinecolor="rgba(148,163,184,
 PAGE = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Aerobic Efficiency</title>
+<title>Am I getting better at running?</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -87,17 +90,17 @@ PAGE = """<!DOCTYPE html>
  footer {{ margin-top: 40px; font-size: .72rem; color: #475569;
           border-top: 1px solid #1e293b; padding-top: 12px; line-height: 1.6; }}
 </style></head><body>
-<h1>Am I gaining aerobic efficiency?</h1>
-<p class="sub">Faster at the same heart rate, controlled for weather — updated {generated}</p>
+<h1>Am I getting better at running?</h1>
+<p class="sub">Every run, every type — updated {generated}</p>
 <div class="cards">{cards}</div>
 {body}
-<footer>Steady aerobic-run gates: outdoor GPS · no races or named workouts
-(interval/tempo/speed/track/walk-run) · ≥{min_dur} min after 5-min warmup discard ·
-avg HR {lo}–{hi} bpm with ≥{min_band:.0%} of time in band · pace CV ≤{max_cv:.0%} ·
-≤{max_elev} ft/mi elevation gain — {n_steady} of {n_runs} runs qualify.
-Dew point from Open-Meteo at each run's GPS start and hour (watch sensor not
-trusted). No modeled corrections anywhere: weather and terrain are excluded or
-shown, never adjusted for. Paces in min/mi.</footer>
+<footer>Run types come from workout names (Runna); pre-plan runs are
+"untagged". Efficiency section uses steady aerobic runs only: outdoor GPS,
+no named workouts, ≥{min_dur} min after 5-min warmup discard, avg HR
+{lo}–{hi} bpm with ≥{min_band:.0%} of time in band, pace CV ≤{max_cv:.0%},
+≤{max_elev} ft/mi elevation — {n_steady} of {n_runs} runs qualify. Dew point
+(hover / report card) from Open-Meteo at each run's GPS start. Form metrics
+as recorded by the watch. No modeled corrections anywhere. Paces in min/mi.</footer>
 </body></html>"""
 
 
@@ -131,128 +134,89 @@ def gap_break(df, max_gap_days=45):
     return pd.concat(pieces, ignore_index=True)
 
 
-def efficiency_fig(steady):
-    fig = go.Figure()
-    scatter_bands = BANDS + ["unknown"]
-    for band in scatter_bands:  # traces 0-3
-        pts = steady[steady["dew_band"] == band]
-        fig.add_trace(go.Scatter(
-            x=pts["date_dt"], y=pts["pace_at_ref"], mode="markers",
-            name=f"dew {band}",
-            marker=dict(color=BAND_COLORS[band], size=8, opacity=0.85,
-                        line=dict(width=1, color="rgba(15,23,42,.8)")),
-            customdata=np.stack([pts["name"], pts["eff_avg_hr"].round(0),
-                                 pts["eff_pace_min_mi"].map(fmt_pace),
-                                 pts["distance_mi"].round(1)], axis=-1)
-            if len(pts) else None,
-            hovertemplate="%{customdata[0]}<br>%{x|%b %d %Y}<br>"
-                          "actual %{customdata[2]}/mi @ %{customdata[1]} bpm · "
-                          "%{customdata[3]} mi<extra>" + band + "</extra>"))
-    # traces 4-11: (line, low-confidence markers) per selection
-    selections = [("All", steady)] + [(b, steady[steady["dew_band"] == b])
-                                      for b in BANDS]
-    for name, subset in selections:
-        t = rolling_fit(subset) if len(subset) else pd.DataFrame()
-        lowc = t[~t["confident"]] if len(t) else t
-        tb = gap_break(t) if len(t) else t
-        fig.add_trace(go.Scatter(
-            x=tb["date_dt"] if len(tb) else [], y=tb["pace"] if len(tb) else [],
-            mode="lines", name=f"{C.FIT_WINDOW_DAYS}-day trend",
-            line=dict(color="#f1f5f9", width=2.5),
-            connectgaps=False, visible=(name == "All")))
-        fig.add_trace(go.Scatter(
-            x=lowc["date_dt"] if len(lowc) else [],
-            y=lowc["pace"] if len(lowc) else [],
-            mode="markers", name="low confidence (<5 runs in window)",
-            marker=dict(color="#f1f5f9", symbol="circle-open", size=7),
-            visible=(name == "All")))
+def type_trend(sub, col="pace_mi"):
+    """56-day rolling median of a column for one run type, gap-broken."""
+    t = (sub.set_index("date_dt")[col].rolling("56D", min_periods=3).median()
+         .reset_index().rename(columns={col: "v"}))
+    return gap_break(t.dropna(subset=["v"]))
 
-    buttons = []
-    for i, (name, _) in enumerate(selections):
-        vis_scatter = [True] * 4 if name == "All" else \
-            [b == name for b in scatter_bands]
-        vis_trend = [False] * 8
-        vis_trend[2 * i] = vis_trend[2 * i + 1] = True
-        buttons.append(dict(label=name, method="update",
-                            args=[{"visible": vis_scatter + vis_trend}]))
+
+def everyrun_fig(real):
+    """All runs, pace over time, colored by type, filterable by type."""
+    types = [t for t in TYPE_ORDER if (real["run_type"] == t).any()]
+    fig = go.Figure()
+    for t in types:  # scatter traces
+        pts = real[real["run_type"] == t]
+        fig.add_trace(go.Scatter(
+            x=pts["date_dt"], y=pts["pace_mi"], mode="markers", name=t,
+            marker=dict(color=TYPE_COLORS[t], size=8, opacity=0.85,
+                        line=dict(width=1, color="rgba(15,23,42,.8)")),
+            customdata=np.stack([pts["name"].fillna(""),
+                                 pts["distance_mi"].round(1),
+                                 pts["avg_hr"].fillna(0).round(0),
+                                 pts["dew_point_f"].fillna(-99).round(0)],
+                                axis=-1),
+            hovertemplate="%{customdata[0]}<br>%{x|%b %d %Y} · "
+                          "%{customdata[1]} mi · %{customdata[2]:.0f} bpm · "
+                          "dew %{customdata[3]:.0f}°F<br>%{y:.2f} min/mi"
+                          "<extra>" + t + "</extra>"))
+    for t in types:  # matching trend traces
+        tr = type_trend(real[real["run_type"] == t])
+        fig.add_trace(go.Scatter(
+            x=tr["date_dt"], y=tr["v"], mode="lines", connectgaps=False,
+            line=dict(color=TYPE_COLORS[t], width=2), opacity=0.9,
+            name=f"{t} trend", showlegend=False, hoverinfo="skip"))
+    n = len(types)
+    buttons = [dict(label="All", method="update",
+                    args=[{"visible": [True] * (2 * n)}])]
+    for i, t in enumerate(types):
+        vis = [j == i for j in range(n)] * 2
+        buttons.append(dict(label=t, method="update", args=[{"visible": vis}]))
     fig.update_layout(
         updatemenus=[dict(type="buttons", direction="right", buttons=buttons,
                           x=0, xanchor="left", y=1.16, yanchor="top",
                           bgcolor="#131c31", bordercolor="#1e293b",
-                          font=dict(color=INK),
-                          active=0)],
+                          font=dict(color=INK), active=0)],
         margin=dict(t=44))
-    fig.update_yaxes(autorange="reversed", title="pace at %d bpm (min/mi)" % C.REF_HR)
-    fig.update_xaxes(range=[dt.date.today() - dt.timedelta(days=300),
-                            dt.date.today() + dt.timedelta(days=10)])
+    fig.update_yaxes(autorange="reversed", title="pace (min/mi)")
     return fig
 
 
-def decoupling_fig(long_steady):
+def efficiency_fig(steady):
     fig = go.Figure()
-    colors = np.where(long_steady["decoupling_pct"] < 0, GOOD,
-                      np.where(long_steady["decoupling_pct"] <= 5, ACCENT, BAD))
     fig.add_trace(go.Scatter(
-        x=long_steady["date_dt"], y=long_steady["decoupling_pct"], mode="markers",
-        marker=dict(color=colors, size=9,
+        x=steady["date_dt"], y=steady["pace_at_ref"], mode="markers",
+        name="steady runs",
+        marker=dict(color=GOOD, size=8, opacity=0.85,
                     line=dict(width=1, color="rgba(15,23,42,.8)")),
-        customdata=long_steady["name"], name="runs ≥40 min",
-        hovertemplate="%{customdata}<br>%{x|%b %d %Y}: %{y:.1f}%<extra></extra>"))
-    roll = (long_steady.set_index("date_dt")["decoupling_pct"]
-            .rolling("56D").mean().reset_index().rename(columns={"decoupling_pct": "v"}))
-    roll = gap_break(roll)
-    fig.add_trace(go.Scatter(x=roll["date_dt"], y=roll["v"], mode="lines",
-                             name="8-wk avg", connectgaps=False,
-                             line=dict(color="#f1f5f9", width=2)))
-    fig.add_hline(y=5, line_dash="dash", line_color=BAD, opacity=0.7,
-                  annotation_text="5% durability threshold",
-                  annotation_font_color=BAD)
-    fig.add_hline(y=0, line_dash="dot", line_color=GOOD, opacity=0.7,
-                  annotation_text="negative = HR fell vs pace (good)",
-                  annotation_font_color=GOOD, annotation_position="bottom right")
-    fig.update_yaxes(title="efficiency drift, 1st → 2nd half (%)")
+        customdata=np.stack([steady["name"].fillna(""),
+                             steady["eff_avg_hr"].round(0),
+                             steady["eff_pace_min_mi"].map(fmt_pace),
+                             steady["dew_point_f"].fillna(-99).round(0)],
+                            axis=-1),
+        hovertemplate="%{customdata[0]}<br>%{x|%b %d %Y}<br>"
+                      "actual %{customdata[2]}/mi @ %{customdata[1]} bpm · "
+                      "dew %{customdata[3]:.0f}°F<extra></extra>"))
+    t = rolling_fit(steady)
+    if len(t):
+        tb = gap_break(t)
+        fig.add_trace(go.Scatter(x=tb["date_dt"], y=tb["pace"], mode="lines",
+                                 name=f"{C.FIT_WINDOW_DAYS}-day trend",
+                                 connectgaps=False,
+                                 line=dict(color="#f1f5f9", width=2.5)))
+        lowc = t[~t["confident"]]
+        fig.add_trace(go.Scatter(x=lowc["date_dt"], y=lowc["pace"],
+                                 mode="markers", name="low confidence",
+                                 marker=dict(color="#f1f5f9",
+                                             symbol="circle-open", size=7)))
+    fig.update_yaxes(autorange="reversed",
+                     title=f"pace at {C.REF_HR} bpm (min/mi)")
     fig.update_xaxes(range=[dt.date.today() - dt.timedelta(days=300),
                             dt.date.today() + dt.timedelta(days=10)])
-    return fig
-
-
-def humidity_fig(steady):
-    """Pace@REF_HR vs dew point with the personal humidity cost stated."""
-    pts = steady.dropna(subset=["dew_point_f", "pace_at_ref"])
-    fig = go.Figure(go.Scatter(
-        x=pts["dew_point_f"], y=pts["pace_at_ref"], mode="markers",
-        marker=dict(color=[BAND_COLORS[b] for b in pts["dew_band"]], size=8,
-                    line=dict(width=1, color="rgba(15,23,42,.8)")),
-        customdata=np.stack([pts["name"], pts["date_dt"].dt.strftime("%b %d %Y")],
-                            axis=-1),
-        hovertemplate="%{customdata[0]}<br>%{customdata[1]}<br>"
-                      "dew %{x:.0f}°F · %{y:.2f} min/mi<extra></extra>",
-        name="steady runs"))
-    # Only claim a humidity cost when the fit is positive and supported —
-    # while fitness gains and summer arrive together, time and weather are
-    # entangled and a naive slope is meaningless (it currently comes out ~0).
-    note = "no clean humidity signal yet — fitness gains and summer arrived together"
-    if len(pts) >= 8 and np.ptp(pts["dew_point_f"]) >= 15:
-        slope, icept = np.polyfit(pts["dew_point_f"], pts["pace_at_ref"], 1)
-        if slope > 0.005:  # > 3 sec/mi per 10°F
-            xs = np.array([pts["dew_point_f"].min(), pts["dew_point_f"].max()])
-            fig.add_trace(go.Scatter(x=xs, y=slope * xs + icept, mode="lines",
-                                     line=dict(color="#f1f5f9", width=2,
-                                               dash="dot"),
-                                     name="fit", hoverinfo="skip"))
-            note = (f"Humidity costs you ~{slope * 10 * 60:.0f} sec/mi "
-                    f"per 10°F of dew point")
-    fig.add_annotation(text=note, xref="paper", yref="paper",
-                       x=0.02, y=0.02, showarrow=False,
-                       font=dict(color="#94a3b8", size=12))
-    fig.update_layout(showlegend=False)
-    fig.update_xaxes(title="dew point at run start (°F)")
-    fig.update_yaxes(autorange="reversed", title=f"pace at {C.REF_HR} bpm")
     return fig
 
 
 def beats_fig(steady):
-    """Heartbeats per mile — the efficiency signal in a visceral unit."""
     s = steady.copy()
     s["beats_per_mi"] = s["eff_avg_hr"] * s["eff_pace_min_mi"]
     fig = go.Figure(go.Scatter(
@@ -275,30 +239,64 @@ def beats_fig(steady):
     return fig
 
 
-def discipline_fig(runs):
-    """Share of intended-easy runs actually kept in the easy band, monthly."""
-    name_l = runs["name"].fillna("").str.lower()
-    is_workout = name_l.str.contains("|".join(C.WORKOUT_NAME_KEYWORDS))
-    easy_intent = runs[~is_workout & (runs["event_type"] != "race")
-                       & runs["eff_avg_hr"].notna()].copy()
-    easy_intent["kept"] = easy_intent["eff_avg_hr"] <= C.EASY_HR_BAND[1]
-    m = (easy_intent.set_index("date_dt")
-         .resample("ME").agg(kept=("kept", "mean"), n=("kept", "size")))
-    m = m[m["n"] >= 3]
+def form_fig(real, col, ytitle, hline=None, hline_note="", better=""):
+    """Generic form-metric trend: dots colored by type + 28d rolling median."""
+    pts = real.dropna(subset=[col])
     fig = go.Figure(go.Scatter(
-        x=m.index, y=m["kept"] * 100, mode="lines+markers",
-        marker=dict(color=GOOD, size=7), line=dict(color=GOOD, width=2),
-        customdata=m["n"],
-        hovertemplate="%{x|%b %Y}: %{y:.0f}% of %{customdata} easy runs"
-                      "<extra></extra>"))
-    fig.add_hline(y=80, line_dash="dot", line_color=MUTED, opacity=0.6)
-    fig.update_yaxes(range=[0, 105],
-                     title=f"% easy runs kept ≤{C.EASY_HR_BAND[1]} bpm")
+        x=pts["date_dt"], y=pts[col], mode="markers",
+        marker=dict(color=[TYPE_COLORS[t] for t in pts["run_type"]], size=6,
+                    opacity=0.55),
+        customdata=pts["name"].fillna(""),
+        hovertemplate="%{customdata}<br>%{x|%b %d %Y}: %{y:.1f}"
+                      "<extra></extra>", name=""))
+    roll = (pts.set_index("date_dt")[col].rolling("28D", min_periods=3)
+            .median().reset_index().rename(columns={col: "v"}))
+    roll = gap_break(roll.dropna(subset=["v"]))
+    fig.add_trace(go.Scatter(x=roll["date_dt"], y=roll["v"], mode="lines",
+                             connectgaps=False,
+                             line=dict(color="#f1f5f9", width=2), name="28d"))
+    if hline is not None:
+        fig.add_hline(y=hline, line_dash="dot", line_color=MUTED, opacity=0.8,
+                      annotation_text=hline_note, annotation_font_color=MUTED)
+    if better:
+        fig.add_annotation(text=better, xref="paper", yref="paper", x=0.02,
+                           y=0.04, showarrow=False,
+                           font=dict(color=MUTED, size=11))
+    fig.update_layout(showlegend=False)
+    fig.update_yaxes(title=ytitle)
+    return fig
+
+
+def decoupling_fig(long_steady):
+    fig = go.Figure()
+    colors = np.where(long_steady["decoupling_pct"] < 0, GOOD,
+                      np.where(long_steady["decoupling_pct"] <= 5, ACCENT, BAD))
+    fig.add_trace(go.Scatter(
+        x=long_steady["date_dt"], y=long_steady["decoupling_pct"], mode="markers",
+        marker=dict(color=colors, size=9,
+                    line=dict(width=1, color="rgba(15,23,42,.8)")),
+        customdata=long_steady["name"], name="runs ≥40 min",
+        hovertemplate="%{customdata}<br>%{x|%b %d %Y}: %{y:.1f}%<extra></extra>"))
+    roll = (long_steady.set_index("date_dt")["decoupling_pct"]
+            .rolling("56D").mean().reset_index()
+            .rename(columns={"decoupling_pct": "v"}))
+    roll = gap_break(roll)
+    fig.add_trace(go.Scatter(x=roll["date_dt"], y=roll["v"], mode="lines",
+                             name="8-wk avg", connectgaps=False,
+                             line=dict(color="#f1f5f9", width=2)))
+    fig.add_hline(y=5, line_dash="dash", line_color=BAD, opacity=0.7,
+                  annotation_text="5% durability threshold",
+                  annotation_font_color=BAD)
+    fig.add_hline(y=0, line_dash="dot", line_color=GOOD, opacity=0.7,
+                  annotation_text="negative = HR fell vs pace (good)",
+                  annotation_font_color=GOOD, annotation_position="bottom right")
+    fig.update_yaxes(title="efficiency drift, 1st → 2nd half (%)")
+    fig.update_xaxes(range=[dt.date.today() - dt.timedelta(days=300),
+                            dt.date.today() + dt.timedelta(days=10)])
     return fig
 
 
 def calendar_fig(runs):
-    """GitHub-style consistency heatmap of daily miles, trailing 12 months."""
     end = pd.Timestamp.today().normalize()
     start = (end - pd.Timedelta(days=364)) - pd.Timedelta(days=int(
         (end - pd.Timedelta(days=364)).dayofweek))
@@ -323,7 +321,6 @@ def calendar_fig(runs):
 
 
 def longrun_fig(runs):
-    """Longest run per week, trended toward race day."""
     wk = runs.set_index("date_dt")["distance_mi"].resample("W").max().fillna(0)
     fig = go.Figure(go.Bar(x=wk.index, y=wk.values, marker_color="#818cf8",
                            marker_line_width=0,
@@ -371,19 +368,21 @@ def monthly_table(runs, steady):
         rm = r[r.index.to_period("M") == m]
         sm = s[s.index.to_period("M") == m]
         med = sm["pace_at_ref"].median() if len(sm) else np.nan
+        cad = rm["avg_cadence_spm"].median()
         dew = rm["dew_point_f"].median()
-        rows.append(f"<tr><td>{m.strftime('%b %Y')}</td>"
-                    f"<td>{len(rm)}</td>"
-                    f"<td>{rm['distance_mi'].sum():.0f}</td>"
-                    f"<td>{len(sm)}</td>"
-                    f"<td>{fmt_pace(med)}</td>"
-                    f"<td>{dew:.0f}°F</td></tr>" if pd.notna(dew) else
-                    f"<tr><td>{m.strftime('%b %Y')}</td><td>{len(rm)}</td>"
-                    f"<td>{rm['distance_mi'].sum():.0f}</td><td>{len(sm)}</td>"
-                    f"<td>{fmt_pace(med)}</td><td>—</td></tr>")
+        rows.append(
+            f"<tr><td>{m.strftime('%b %Y')}</td><td>{len(rm)}</td>"
+            f"<td>{rm['distance_mi'].sum():.0f}</td>"
+            f"<td>{fmt_pace(med)}</td>"
+            f"<td>{cad:.0f}</td>" if pd.notna(cad) else
+            f"<tr><td>{m.strftime('%b %Y')}</td><td>{len(rm)}</td>"
+            f"<td>{rm['distance_mi'].sum():.0f}</td><td>{fmt_pace(med)}</td>"
+            f"<td>—</td>")
+        rows.append(f"<td>{dew:.0f}°F</td></tr>" if pd.notna(dew)
+                    else "<td>—</td></tr>")
     return ("<table class='report'><tr><th>Month</th><th>Runs</th><th>Miles</th>"
-            "<th>Steady</th><th>Pace@%d</th><th>Median dew</th></tr>"
-            % C.REF_HR + "".join(rows) + "</table>")
+            f"<th>Pace@{C.REF_HR}</th><th>Cadence</th><th>Median dew</th></tr>"
+            + "".join(rows) + "</table>")
 
 
 def main():
@@ -396,9 +395,12 @@ def main():
 
     runs = pd.read_parquet(C.DATA / "runs.parquet")
     runs["date_dt"] = pd.to_datetime(runs["date"])
+    runs["pace_mi"] = 1609.344 / runs["avg_speed_mps"] / 60.0
     daily = pd.read_parquet(C.DATA / "daily_health.parquet")
     steady = runs[runs["steady_z2"]].copy()
     long_steady = steady[steady["eligible_time_s"] >= C.DECOUPLING_MIN_DURATION_S]
+    # plausible outdoor-pace runs for charts (drops watch fumbles / bad GPS)
+    real = runs[(runs["distance_mi"] >= 1) & runs["pace_mi"].between(4, 20)].copy()
 
     # headline numbers
     now_pace, delta_str = headline_delta(rolling_fit(steady))
@@ -406,49 +408,75 @@ def main():
     if delta_str:
         delta_cls = "down" if delta_str.startswith("+") else "up"
 
-    recent_dec = long_steady.tail(3)["decoupling_pct"]
-    dec_val = f"{recent_dec.median():+.1f}%" if len(recent_dec) else "—"
-    dec_cls = "up" if len(recent_dec) and recent_dec.median() <= 5 else "down"
-    dec_note = ("last %d long runs" % len(recent_dec)) if len(recent_dec) else ""
-
     wk = runs.set_index("date_dt")["distance_mi"].resample("W").sum()
     cur4, prev4 = wk.tail(4).mean(), wk.tail(8).head(4).mean()
     vol_delta = cur4 - prev4
     vol_cls = "up" if vol_delta >= 0 else "down"
 
+    cad = real.dropna(subset=["avg_cadence_spm"]).set_index("date_dt")["avg_cadence_spm"]
+
+    def trailing_mean(s, days=28):
+        return s[s.index > s.index.max() - pd.Timedelta(days=days)].mean() \
+            if len(s) else np.nan
+
+    cad_now = trailing_mean(cad)
+    cad_prev = trailing_mean(cad[cad.index <= cad.index.max()
+                                 - pd.Timedelta(days=56)] if len(cad) else cad)
+    cad_delta = ""
+    cad_cls = "flat"
+    if not np.isnan(cad_now) and not np.isnan(cad_prev):
+        d = cad_now - cad_prev
+        cad_delta = f"{d:+.0f} spm vs 8 wk ago"
+        cad_cls = "up" if d >= 0 else "down"
+
     days = (dt.date.fromisoformat(C.RACE_DATE) - dt.date.today()).days
 
     cards = "".join([
-        card(f"Pace @ {C.REF_HR} bpm", fmt_pace(now_pace), "/mi",
+        card(f"Easy pace @ {C.REF_HR} bpm", fmt_pace(now_pace), "/mi",
              delta_str or "", delta_cls),
-        card("Long-run decoupling", dec_val, "", dec_note, dec_cls),
         card("Weekly volume (4-wk avg)", f"{cur4:.0f}", "mi",
              f"{vol_delta:+.0f} mi vs prior 4 wk", vol_cls),
+        card("Cadence (28d avg)", f"{cad_now:.0f}" if not np.isnan(cad_now)
+             else "—", "spm", cad_delta, cad_cls),
         card("Days to 10K", days, "", C.RACE_DATE, "flat"),
     ])
 
     body = [
-        f"<h2>Predicted pace at {C.REF_HR} bpm</h2>",
-        "<p class='caption'>Steady aerobic runs only. Filter to one dew point "
-        "band so seasonal weather can't masquerade as fitness.</p>",
-        div(efficiency_fig(steady), 440),
-        "<p class='caption'>Dots = each run scaled to the reference HR by its "
-        "own efficiency factor. Line = pace-vs-HR regression over a trailing "
-        f"{C.FIT_WINDOW_DAYS}-day window, evaluated at {C.REF_HR} bpm.</p>",
+        "<h2>Every run</h2>",
+        "<p class='caption'>All runs, colored by workout type. Filter to one "
+        "type to see its own trend — getting better shows up as every band "
+        "drifting down.</p>",
+        div(everyrun_fig(real), 460),
 
-        "<h2>The cost of humidity · beats per mile</h2>",
+        "<h2>Aerobic efficiency — easy runs at the same heart rate</h2>",
+        "<p class='caption'>The cleanest fitness signal: steady aerobic runs "
+        f"only, expressed as predicted pace at {C.REF_HR} bpm (left) and "
+        "heartbeats per mile (right).</p>",
         "<div class='grid2'>",
-        div(humidity_fig(steady), 330),
+        div(efficiency_fig(steady), 330),
         div(beats_fig(steady), 330),
         "</div>",
-        "<p class='caption'>Left: your measured weather penalty across all "
-        "steady runs — shown, not corrected for. Right: total heartbeats per "
-        "mile, the same efficiency signal in a blunter unit.</p>",
+
+        "<h2>Running form</h2>",
+        "<p class='caption'>As recorded by the watch, all runs, dots colored "
+        "by type with a 28-day median line. Speed = cadence × stride length; "
+        "contact time and vertical ratio typically fall as economy improves.</p>",
+        "<div class='grid2'>",
+        div(form_fig(real, "avg_cadence_spm", "cadence (spm)"), 300),
+        div(form_fig(real, "avg_gct_balance", "ground contact balance (% left)",
+                     hline=50, hline_note="perfect 50/50"), 300),
+        div(form_fig(real, "avg_stride_len_cm", "stride length (cm)"), 300),
+        div(form_fig(real, "avg_gct_ms", "ground contact time (ms)",
+                     better="lower = snappier"), 300),
+        div(form_fig(real, "avg_vert_ratio", "vertical ratio (%)",
+                     better="lower = less bounce per meter"), 300),
+        div(form_fig(real, "avg_power_w", "running power (W)"), 300),
+        "</div>",
 
         "<h2>Durability toward race day</h2>",
-        "<p class='caption'>Decoupling: does efficiency hold from first half "
-        "to second half of runs ≥40 min? Under 5% = aerobically durable. "
-        "Alongside: longest run per week vs the 10K distance.</p>",
+        "<p class='caption'>Decoupling: does efficiency hold from first to "
+        "second half of long steady runs? Under 5% = durable. Alongside: "
+        "longest run per week vs the 10K distance.</p>",
         "<div class='grid2'>",
         div(decoupling_fig(long_steady), 330) if len(long_steady)
         else "<p class='caption'>No steady runs ≥ 40 min yet.</p>",
@@ -470,21 +498,6 @@ def main():
     fw.update_yaxes(title="weekly miles")
     body.append(div(fw, 260))
 
-    zcols = [c for c in runs.columns if c.startswith("z") and c.endswith("_s")]
-    zt = runs.set_index("date_dt")[zcols].resample("W").sum()
-    share = zt.div(zt.sum(axis=1), axis=0) * 100
-    fz = go.Figure()
-    palette = ["#1d4ed8", "#38bdf8", "#34d399", "#fbbf24", "#f87171"]
-    for i, c in enumerate(zcols):
-        fz.add_trace(go.Scatter(x=share.index, y=share[c], stackgroup="one",
-                                name=f"Z{i+1}", line=dict(width=0),
-                                fillcolor=palette[i % 5]))
-    fz.update_layout(showlegend=False)
-    fz.update_yaxes(range=[0, 100], title="% run time by HR zone")
-    body.append(div(fz, 260))
-
-    body.append(div(discipline_fig(runs), 260))
-
     dd = daily.copy()
     dd["date"] = pd.to_datetime(dd["date"])
     fh = go.Figure()
@@ -501,11 +514,7 @@ def main():
                      yaxis2=dict(title="HRV", overlaying="y", side="right",
                                  **AXIS))
     body.append(div(fh, 260))
-    body.append("</div>"
-                "<p class='caption'>Bottom-left: share of intended-easy runs "
-                "(non-workout names) actually kept at or below "
-                f"{C.EASY_HR_BAND[1]} bpm — easy only works if it stays easy. "
-                "Dotted line = 80%.</p>")
+    body.append("</div>")
 
     lo, hi = C.EASY_HR_BAND
     html = PAGE.format(cards=cards, body="\n".join(body),

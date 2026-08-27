@@ -84,6 +84,14 @@ def pull_activities(g: Garmin) -> pd.DataFrame:
             "avg_speed_mps": a.get("averageSpeed"),
             "start_lat": a.get("startLatitude"),
             "start_lon": a.get("startLongitude"),
+            # running dynamics (availability depends on device/accessories)
+            "avg_cadence_spm": a.get("averageRunningCadenceInStepsPerMinute"),
+            "avg_stride_len_cm": a.get("avgStrideLength"),
+            "avg_gct_ms": a.get("avgGroundContactTime"),
+            "avg_vert_osc": a.get("avgVerticalOscillation"),
+            "avg_vert_ratio": a.get("avgVerticalRatio"),
+            "avg_gct_balance": a.get("avgGroundContactBalance"),
+            "avg_power_w": a.get("avgPower"),
         })
     new = pd.DataFrame(rows)
     df = pd.concat([prev, new]) if prev is not None else new
